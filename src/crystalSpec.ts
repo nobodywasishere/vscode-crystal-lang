@@ -18,6 +18,7 @@ export class CrystalTestingProvider {
         'Crystal Specs'
     )
     private specLog = vscode.window.createOutputChannel("Crystal Spec");
+    private executingCrystal = false
 
     constructor() {
         // this.controller.resolveHandler = test => {
@@ -28,7 +29,11 @@ export class CrystalTestingProvider {
         //     }
         // };
 
-        // vscode.workspace.onDidChangeTextDocument(e => this.getTestCases([e.document.uri.path]));
+        vscode.workspace.onDidSaveTextDocument(e => {
+            if (e.uri.scheme === "file" && this.isSpecFile(e.uri.path)) {
+                this.getTestCases([e.uri.path])
+            }
+        });
         this.getTestCases();
     }
 
@@ -36,32 +41,32 @@ export class CrystalTestingProvider {
         this.specLog.appendLine(data)
     }
 
-    // changeWorkspace(e: vscode.WorkspaceFoldersChangeEvent) {
-    //     e.
-    // }
+
+    isSpecFile(file: string): boolean {
+        return file.endsWith('_spec.cr') && file.includes(vscode.workspace.workspaceFolders[0].uri.path + path.sep + "spec")
+    }
 
     async getTestCases(args?: string[]): Promise<void> {
         const tempFolder = fs.mkdtempSync(`${tmpdir()}${path.sep}crystal-spec-`) + path.sep + "junit";
         const crystal = this.config["compiler"]
         let commandArgs = ["spec", "--junit_output", tempFolder]
         if (args && args.length > 0) {
-            commandArgs.concat(args)
+            commandArgs = commandArgs.concat(args)
         }
-        this.log(`Running command: ${crystal} ${commandArgs.join(' ')}`)
 
         return new Promise((resolve, reject) => {
             this.execCrystal(crystal, commandArgs)
-            .then(() => this.readTestResults(tempFolder))
-            .then(junit => this.parseJunit(junit))
-            .then(parsedJunit => this.convertJunitTestcases(parsedJunit))
-            .then(() => {
-                this.log("Success!");
-                return Promise.resolve();
-            })
-            .catch((err) => {
-                this.log("Error: " + error.toString() + "\n" + JSON.stringify(error));
-                return Promise.reject(error);
-            })
+                .then(() => this.readTestResults(tempFolder))
+                .then(junit => this.parseJunit(junit))
+                .then(parsedJunit => this.convertJunitTestcases(parsedJunit))
+                .then(() => {
+                    this.log("Success!");
+                    return Promise.resolve();
+                })
+                .catch((err) => {
+                    this.log("Error: " + err.message + "\n" + err.stack);
+                    return Promise.reject(err);
+                })
         })
     };
 
@@ -72,25 +77,36 @@ export class CrystalTestingProvider {
         if (args && args.length > 0) {
             commandArgs = commandArgs.concat(args)
         }
-        this.log(`Running command: ${crystal} ${commandArgs.join(' ')}`)
 
         try {
             await this.execCrystal(crystal, commandArgs);
             const junit = await this.readTestResults(tempFolder);
             return await this.parseJunit(junit);
         } catch (err) {
-            this.log("Error: " + error.toString() + "\n" + JSON.stringify(error));
-            return await Promise.reject(error);
+            this.log("Error: " + err.message + "\n" + err.stack);
+            return await Promise.reject(err);
         }
     }
 
     runProfile = this.controller.createRunProfile('Run', vscode.TestRunProfileKind.Run,
         async (request, token) => {
             const run = this.controller.createTestRun(request);
-            const queue: vscode.TestItem[] = [];
-
             const start = Date.now();
-            const result = await this.execTestCases()
+
+            let runnerArgs = []
+            this.controller.items.forEach((item) => {
+                runnerArgs = runnerArgs.concat(this.generateRunnerArgs(item, request.include, request.exclude))
+            })
+
+            let result: junit2json.TestSuite
+            try {
+                result = await this.execTestCases(runnerArgs)
+            } catch(err) {
+                this.log("Error: " + err.message)
+                run.end()
+                return
+            }
+
             result.testcase.forEach((testcase) => {
                 let exists = undefined
                 this.controller.items.forEach((child: vscode.TestItem) => {
@@ -119,15 +135,48 @@ export class CrystalTestingProvider {
                         }
                     }
                 }
-             })
+            })
 
-            this.log("Finished execution")
+            this.log(`Finished execution in ${Date.now() - start}ms`)
             run.end();
         }
     );
 
+    generateRunnerArgs(item: vscode.TestItem, includes: readonly vscode.TestItem[], excludes: readonly vscode.TestItem[]): string[] {
+        if (includes) {
+            if (includes.includes(item)) {
+                return [item.uri.path]
+            } else {
+                let foundChildren = []
+                item.children.forEach((child) => {
+                    foundChildren = foundChildren.concat(this.generateRunnerArgs(child, includes, excludes))
+                })
+                return foundChildren
+            }
+        } else if (excludes.length > 0) {
+            if (excludes.includes(item)) {
+                return []
+            } else {
+                let foundChildren = []
+                item.children.forEach((child) => {
+                    foundChildren = foundChildren.concat(this.generateRunnerArgs(child, includes, excludes))
+                })
+                return foundChildren
+            }
+        } else {
+            return [item.uri.path]
+        }
+    }
+
     execCrystal(command: string, commandArgs: string[]): Promise<string> {
         return new Promise((resolve, reject) => {
+            if (this.executingCrystal) {
+                return reject(new Error("Crystal is already being executed"))
+            }
+            this.executingCrystal = true
+
+            this.log(`Executing: ${command} ${commandArgs.join(' ')}`)
+
             const process = spawn(command, commandArgs, {
                 cwd: vscode.workspace.workspaceFolders[0].uri.path
             });
@@ -143,26 +192,38 @@ export class CrystalTestingProvider {
             })
 
             process.on('error', (error) => {
-                this.log("Error executing crystal command: " + error.message + "\n" + output);
-                reject("Error executing crystal command: " + error.message + "\n" + output);
+                this.executingCrystal = false
+                reject(new Error("Error executing crystal command: " + error.message + "\n" + output));
             })
 
-            process.on('close', () => {
-                resolve(output);
+            process.on('exit', (code, signal) => {
+                if (code !== 0) {
+                    this.executingCrystal = false
+                    reject(new Error(`Exited with error code ${code}: ${output}`))
+                } else {
+                    this.executingCrystal = false
+                    resolve(output);
+                }
             })
         })
     }
 
     readTestResults(folder: string): Promise<Buffer> {
         return new Promise((resolve, reject) => {
-            fs.readFile(`${folder}/output.xml`, (error, data) => {
-                if (error) {
-                    this.log("Error reading test results file")
-                    reject("Error reading test results file: " + error.message);
-                } else {
-                    resolve(data);
+            try {
+                if (!fs.existsSync(`${folder}/output.xml`)) {
+                    reject(new Error("Test results file doesn't exist"))
                 }
-            })
+                fs.readFile(`${folder}/output.xml`, (error, data) => {
+                    if (error) {
+                        reject(new Error("Error reading test results file: " + error.message));
+                    } else {
+                        resolve(data);
+                    }
+                })
+            } catch(err) {
+                reject(err)
+            }
         })
     }
 
@@ -186,7 +247,7 @@ export class CrystalTestingProvider {
                         return resolve(testcase)
                     }
                 })
-                return reject("Could not find testcase " + id)
+                return reject(new Error("Could not find testcase " + id))
             } catch (err) {
                 return reject(err)
             }
@@ -209,8 +270,12 @@ export class CrystalTestingProvider {
     convertJunitTestcases(testsuite: junit2json.TestSuite): Promise<void> {
         return new Promise((resolve, reject) => {
             try {
+                if (testsuite.tests === 0) {
+                    return reject(new Error(`No testcases in testsuite ${JSON.stringify(testsuite)}`))
+                }
+
                 testsuite.testcase.forEach((testcase) => {
-                    this.log(JSON.stringify(testcase))
+                    // this.log(JSON.stringify(testcase))
                     const item = this.controller.createTestItem(
                         // @ts-expect-error
                         testcase.file + " " + testcase.name,
@@ -236,14 +301,14 @@ export class CrystalTestingProvider {
                     testcase.file.replace(fullPath, "").split(path.sep).filter((folder => folder !== "")).forEach((node: string) => {
                         // build full path of folder
                         fullPath += path.sep + node
-                        this.log("Node: " + node)
-                        this.log("fullPath: " + fullPath)
+                        // this.log("Node: " + node)
+                        // this.log("fullPath: " + fullPath)
 
                         // check if folder exists in test controller
                         const exists = this.controller.items.get(fullPath)
                         if (exists) {
                             // if it does, get it
-                            this.log("Node exists: " + exists.uri.path)
+                            // this.log("Node exists: " + exists.uri.path)
                             parent = exists
                         } else if (parent) {
                             let childMatch = null
@@ -254,18 +319,18 @@ export class CrystalTestingProvider {
                             })
 
                             if (childMatch !== null) {
-                                this.log("Found match in parent children: " + childMatch.uri.path)
+                                // this.log("Found match in parent children: " + childMatch.uri.path)
                                 parent = childMatch
                             } else {
                                 // if it doesn't and has a parent, create an item and make it a child of the parent
                                 let child = this.controller.createTestItem(fullPath, node, vscode.Uri.file(fullPath))
-                                this.log("Creating node under parent: " + parent.uri.path + " => " + node)
+                                // this.log("Creating node under parent: " + parent.uri.path + " => " + node)
                                 parent.children.add(child)
                                 parent = child
                             }
                         } else {
                             // if don't already have a parent, use controller.items
-                            this.log("Creating node under root: " + fullPath)
+                            // this.log("Creating node under root: " + fullPath)
                             let child = this.controller.createTestItem(fullPath, node, vscode.Uri.file(fullPath))
                             this.controller.items.add(child)
                             parent = child
@@ -273,10 +338,9 @@ export class CrystalTestingProvider {
                     })
 
                     // add testcases to last parent
-                    // @ts-expect-error
-                    this.log("Adding testcase " + testcase.file + " to " + parent.uri.path)
+                    // this.log("Adding testcase " + testcase.file + " to " + parent.uri.path)
                     parent.children.add(item)
-                    this.log("")
+                    // this.log("")
                 })
                 resolve()
             } catch (err) {
