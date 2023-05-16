@@ -18,35 +18,92 @@ export class CrystalTestingProvider {
         'Crystal Specs'
     )
     private specLog = vscode.window.createOutputChannel("Crystal Spec");
+    private workspaceFolders: vscode.WorkspaceFolder[]
     private executingCrystal = false
 
     constructor() {
-        // this.controller.resolveHandler = test => {
-        //     if (!test) {
-        //         this.getTestCases();
-        //     } else {
-        //         this.getTestCases([test.uri.path]);
-        //     }
-        // };
+        this.refreshSpecWorkspaceFolders()
+        this.refreshTestCases()
 
         vscode.workspace.onDidSaveTextDocument(e => {
             if (e.uri.scheme === "file" && this.isSpecFile(e.uri.path)) {
-                this.getTestCases([e.uri.path])
+                this.deleteTestItem(e.uri.path);
+                this.getTestCases(vscode.workspace.getWorkspaceFolder(e.uri).uri, [e.uri.path])
             }
         });
-        this.getTestCases();
+
+        vscode.workspace.onDidChangeWorkspaceFolders((event) => {
+            this.refreshSpecWorkspaceFolders()
+            event.added.forEach((folder) => {
+                this.log("Adding folder to workspace: " + folder.uri.path)
+                this.getTestCases(folder.uri)
+            })
+            event.removed.forEach((folder) => {
+                this.log("Removing folder from workspace: " + folder.uri.path)
+                this.deleteWorkspaceChildren(folder)
+            })
+        });
+
+        this.controller.refreshHandler = async () => {
+            this.refreshSpecWorkspaceFolders()
+            this.controller.items.forEach((item) => {
+                this.controller.items.delete(item.id)
+            })
+            this.refreshTestCases()
+        }
+
     }
 
     log(data: string) {
         this.specLog.appendLine(data)
     }
 
-
-    isSpecFile(file: string): boolean {
-        return file.endsWith('_spec.cr') && file.includes(vscode.workspace.workspaceFolders[0].uri.path + path.sep + "spec")
+    refreshSpecWorkspaceFolders(): void {
+        let folders = []
+        vscode.workspace.workspaceFolders.forEach((folder) => {
+            if (fs.existsSync(`${folder.uri.path}${path.sep}shard.yml`) &&
+                fs.existsSync(`${folder.uri.path}${path.sep}spec`)) {
+                folders.push(folder)
+            }
+        })
+        this.workspaceFolders = folders
     }
 
-    async getTestCases(args?: string[]): Promise<void> {
+    isSpecFile(file: string): boolean {
+        return file.endsWith('_spec.cr') &&
+            this.workspaceFolders.includes(vscode.workspace.getWorkspaceFolder(vscode.Uri.file(file)))
+    }
+
+    async refreshTestCases(): Promise<void> {
+        return new Promise(async () => {
+            for (var i = 0; i < this.workspaceFolders.length; i++) {
+                await this.getTestCases(this.workspaceFolders[i].uri)
+            }
+        })
+    }
+
+    private deleteTestItem(id: string) {
+        this.controller.items.forEach((child) => {
+            var item = this.getChild(id, child);
+            if (item !== undefined) {
+                item.children.forEach((c) => {
+                    item.children.delete(c.id);
+                });
+            } else if (child.id === id) {
+                this.controller.items.delete(id)
+            }
+        });
+    }
+
+    private deleteWorkspaceChildren(workspace: vscode.WorkspaceFolder) {
+        this.controller.items.forEach((child) => {
+            if (child.uri.path.startsWith(workspace.uri.path)) {
+                this.deleteTestItem(child.uri.path)
+            }
+        })
+    }
+
+    async getTestCases(workspace: vscode.Uri, args?: string[]): Promise<void> {
         const tempFolder = fs.mkdtempSync(`${tmpdir()}${path.sep}crystal-spec-`) + path.sep + "junit";
         const crystal = this.config["compiler"]
         let commandArgs = ["spec", "--junit_output", tempFolder]
@@ -55,22 +112,22 @@ export class CrystalTestingProvider {
         }
 
         return new Promise((resolve, reject) => {
-            this.execCrystal(crystal, commandArgs)
+            this.execCrystal(workspace, crystal, commandArgs)
                 .then(() => this.readTestResults(tempFolder))
                 .then(junit => this.parseJunit(junit))
                 .then(parsedJunit => this.convertJunitTestcases(parsedJunit))
                 .then(() => {
                     this.log("Success!");
-                    return Promise.resolve();
+                    resolve();
                 })
                 .catch((err) => {
                     this.log("Error: " + err.message + "\n" + err.stack);
-                    return Promise.reject(err);
+                    reject(err);
                 })
         })
     };
 
-    async execTestCases(args?: string[]): Promise<junit2json.TestSuite> {
+    async execTestCases(workspace: vscode.Uri, args?: string[]): Promise<junit2json.TestSuite> {
         const tempFolder = fs.mkdtempSync(`${tmpdir()}${path.sep}crystal-spec-`) + path.sep + "junit";
         const crystal = this.config["compiler"]
         let commandArgs = ["spec", "--junit_output", tempFolder]
@@ -79,7 +136,7 @@ export class CrystalTestingProvider {
         }
 
         try {
-            await this.execCrystal(crystal, commandArgs);
+            await this.execCrystal(workspace, crystal, commandArgs);
             const junit = await this.readTestResults(tempFolder);
             return await this.parseJunit(junit);
         } catch (err) {
@@ -95,47 +152,67 @@ export class CrystalTestingProvider {
 
             let runnerArgs = []
             this.controller.items.forEach((item) => {
-                runnerArgs = runnerArgs.concat(this.generateRunnerArgs(item, request.include, request.exclude))
-            })
-
-            let result: junit2json.TestSuite
-            try {
-                result = await this.execTestCases(runnerArgs)
-            } catch(err) {
-                this.log("Error: " + err.message)
-                run.end()
-                return
-            }
-
-            result.testcase.forEach((testcase) => {
-                let exists = undefined
-                this.controller.items.forEach((child: vscode.TestItem) => {
-                    if (exists === undefined) {
-                        // @ts-expect-error
-                        exists = this.getChild(testcase.file + " " + testcase.name, child)
-                    }
-                })
-
-                if (exists) {
-                    if (!(request.include && request.include.includes(exists)) || !(request.exclude?.includes(exists))) {
-                        if (testcase.error) {
-                            run.failed(exists,
-                                new vscode.TestMessage(
-                                    testcase.error.map((v) => `${v.inner}\n${v.message}`).join("\n\n")
-                                ),
-                                testcase.time * 1000)
-                        } else if (testcase.failure) {
-                            run.failed(exists,
-                                new vscode.TestMessage(
-                                    testcase.failure.map((v) => `${v.inner}\n${v.message}`).join("\n\n")
-                                ),
-                                testcase.time * 1000)
-                        } else {
-                            run.passed(exists, testcase.time * 1000)
-                        }
-                    }
+                let generated = this.generateRunnerArgs(item, request.include, request.exclude)
+                if (generated.length > 0) {
+                    runnerArgs = runnerArgs.concat(generated)
                 }
             })
+
+            let workspaces: vscode.WorkspaceFolder[] = []
+            runnerArgs.forEach((arg) => {
+                const uri = vscode.Uri.file(arg)
+                const workspace = vscode.workspace.getWorkspaceFolder(uri)
+                if (workspace !== undefined && !workspaces.includes(workspace)) {
+                    workspaces.push(workspace)
+                }
+            })
+
+            for (var i = 0; i < workspaces.length; i++) {
+                let args = []
+                runnerArgs.forEach((arg) => {
+                    if (workspaces[i] == vscode.workspace.getWorkspaceFolder(vscode.Uri.file(arg))) {
+                        args.push(arg)
+                    }
+                })
+                let result: junit2json.TestSuite
+                try {
+                    result = await this.execTestCases(workspaces[i].uri, args)
+                } catch (err) {
+                    this.log("Error: " + err.message)
+                    run.end()
+                    return
+                }
+
+                result.testcase.forEach((testcase) => {
+                    let exists = undefined
+                    this.controller.items.forEach((child: vscode.TestItem) => {
+                        if (exists === undefined) {
+                            // @ts-expect-error
+                            exists = this.getChild(testcase.file + " " + testcase.name, child)
+                        }
+                    })
+
+                    if (exists) {
+                        if (!(request.include && request.include.includes(exists)) || !(request.exclude?.includes(exists))) {
+                            if (testcase.error) {
+                                run.failed(exists,
+                                    new vscode.TestMessage(
+                                        testcase.error.map((v) => `${v.inner}\n${v.message}`).join("\n\n")
+                                    ),
+                                    testcase.time * 1000)
+                            } else if (testcase.failure) {
+                                run.failed(exists,
+                                    new vscode.TestMessage(
+                                        testcase.failure.map((v) => `${v.inner}\n${v.message}`).join("\n\n")
+                                    ),
+                                    testcase.time * 1000)
+                            } else {
+                                run.passed(exists, testcase.time * 1000)
+                            }
+                        }
+                    }
+                })
+            }
 
             this.log(`Finished execution in ${Date.now() - start}ms`)
             run.end();
@@ -168,17 +245,19 @@ export class CrystalTestingProvider {
         }
     }
 
-    execCrystal(command: string, commandArgs: string[]): Promise<string> {
+    execCrystal(workspace: vscode.Uri, command: string, commandArgs: string[]): Promise<string> {
         return new Promise((resolve, reject) => {
             if (this.executingCrystal) {
-                return reject(new Error("Crystal is already being executed"))
+                this.log("Crystal is already being executed")
+                return
             }
+
             this.executingCrystal = true
 
-            this.log(`Executing: ${command} ${commandArgs.join(' ')}`)
+            this.log(`Executing in ${workspace.path}: ${command} ${commandArgs.join(' ')}`)
 
             const process = spawn(command, commandArgs, {
-                cwd: vscode.workspace.workspaceFolders[0].uri.path
+                cwd: workspace.path
             });
 
             let output = '';
@@ -197,7 +276,7 @@ export class CrystalTestingProvider {
             })
 
             process.on('exit', (code, signal) => {
-                if (code !== 0) {
+                if (code > 1) {
                     this.executingCrystal = false
                     reject(new Error(`Exited with error code ${code}: ${output}`))
                 } else {
@@ -221,7 +300,7 @@ export class CrystalTestingProvider {
                         resolve(data);
                     }
                 })
-            } catch(err) {
+            } catch (err) {
                 reject(err)
             }
         })
@@ -271,7 +350,8 @@ export class CrystalTestingProvider {
         return new Promise((resolve, reject) => {
             try {
                 if (testsuite.tests === 0) {
-                    return reject(new Error(`No testcases in testsuite ${JSON.stringify(testsuite)}`))
+                    this.log(`Error: No testcases in testsuite ${JSON.stringify(testsuite)}`)
+                    return
                 }
 
                 testsuite.testcase.forEach((testcase) => {
@@ -293,7 +373,9 @@ export class CrystalTestingProvider {
                         );
                     }
 
-                    let fullPath = vscode.workspace.workspaceFolders[0].uri.path + path.sep + 'spec';
+                    // @ts-expect-error
+                    let fullPath = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(testcase.file)).uri.path +
+                        path.sep + 'spec';
                     let parent: vscode.TestItem | null = null
 
                     // split the testcase.file and iterate over every folder in workspace
