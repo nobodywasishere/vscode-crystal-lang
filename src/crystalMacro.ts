@@ -1,57 +1,56 @@
 import * as vscode from "vscode";
 import { spawnSync } from 'node:child_process';
+import exp = require("node:constants");
 
-export async function registerCrystalMacro(context: vscode.ExtensionContext) {
+export async function registerCrystalMacroHoverProvider(context: vscode.ExtensionContext) {
+    // // Commented out as it creates multiple hovers and they're visible throughout the entire document
+    // // Not the best solution, tool is fast enough that running it every time is fine
     // let disposable = vscode.commands.registerCommand('crystal-lang.expandMacro', async () => {
     //     let editor = vscode.window.activeTextEditor;
-
     //     if (editor) {
-    //         let filePath = editor.document.fileName;
-
-    //         let position = editor.selection.active;
-    //         let line = position.line + 1;
-    //         let column = position.character + 1;
-
-    //         // Run the command and capture its output
-    //         let result = spawnSync(
-    //             'crystal', ['tool', 'expand', `${filePath}`, '--cursor', `${filePath}:${line}:${column}`],
-    //             { cwd: vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath)).uri.path }
-    //         );
-
-    //         if (result.status !== 0) {
-    //             // Log any errors that occur
-    //             console.error(result.stderr.toString());
-    //             return;
-    //         }
-
-    //         let markdownResult = "```\n" + result.output.toString() + "\n```"
-
-    //         // Get the range of the current line
-    //         let lineText = editor.document.lineAt(position).text;
-    //         let lineStart = editor.document.offsetAt(new vscode.Position(position.line, 0));
-    //         let lineEnd = lineStart + lineText.length;
-    //         let range = new vscode.Range(editor.document.positionAt(lineStart), editor.document.positionAt(lineEnd));
-
-    //         let hover = new vscode.Hover(new vscode.MarkdownString(markdownResult), range)
-
+    //         vscode.languages.registerHoverProvider({ scheme: 'file', language: 'crystal' }, {
+    //             provideHover(document, position, token) {
+    //                 return expandMacroToHover(editor.document, editor.selection.active);
+    //             }
+    //         })
     //     }
     // })
     // context.subscriptions.push(disposable)
     vscode.languages.registerHoverProvider({ scheme: 'file', language: 'crystal' }, {
         provideHover(document, position, token) {
-            return expandMacro(document, position);
+            return expandMacroToHover(document, position);
         }
     })
 }
 
-function expandMacro(document: vscode.TextDocument, position: vscode.Position): vscode.Hover {
-    let filePath = document.uri.path;
+function expandMacroToHover(document: vscode.TextDocument, position: vscode.Position): vscode.Hover {
+    const config = vscode.workspace.getConfiguration("crystal-lang")
+    if (!config["macroExpansionHover"]) {
+        return;
+    }
+
+    let currentWorkspacePath = vscode.workspace.getWorkspaceFolder(document.uri).uri.path
+
+    let documentPath = document.uri.path;
     let line = position.line + 1;
     let column = position.character + 1;
 
+    let expandArgs: string[] = ['tool', 'expand']
+
+    let mainFile = '';
+    if (config["mainFile"]) {
+        mainFile = config["mainFile"].replace("${workspaceRoot}", currentWorkspacePath)
+
+        if (mainFile !== documentPath) {
+            expandArgs.push(mainFile)
+        }
+    }
+
+    expandArgs.push(documentPath, '--cursor', `${documentPath}:${line}:${column}`)
+
     let result = spawnSync(
-        'crystal', ['tool', 'expand', `${filePath}`, '--cursor', `${filePath}:${line}:${column}`],
-        { cwd: vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath)).uri.path }
+        config["compiler"], expandArgs,
+        { cwd: currentWorkspacePath }
     );
 
     if (result.status !== 0) {
@@ -59,12 +58,9 @@ function expandMacro(document: vscode.TextDocument, position: vscode.Position): 
         return;
     }
 
-    console.log(JSON.stringify(result))
-
     let stdout = result.output.join('\n').replace(/^\n+|\n+$/g, '');
-    console.log(stdout)
-    if (stdout.includes("no expansion found")) {
-        console.log(`No macro expansion at ${filePath}:${line}:${column}`)
+    if (stdout.startsWith("no expansion found")) {
+        // console.log(`No macro expansion at ${filePath}:${line}:${column}`)
         return;
     }
 

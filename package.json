@@ -162,6 +162,11 @@
 					"default": false,
 					"description": "Show symbol information when mouse is hover."
 				},
+				"crystal-lang.macroExpansionHover": {
+					"type": "boolean",
+					"default": false,
+					"description": "Show macro expansion when mouse hovers over a macro."
+				},
 				"crystal-lang.completion": {
 					"type": "boolean",
 					"default": false,
@@ -215,21 +220,6 @@
 					"description": "[Reload required]\nEnables support for Windows Subsystem Linux."
 				}
 			}
-		},
-		"commands": [
-			{
-				"command": "crystal-lang.expandMacro",
-				"title": "Show macro expansion"
-			}
-		],
-		"menus": {
-			"editor/context": [
-				{
-					"command": "crystal-lang.expandMacro",
-					"group": "1_modification",
-					"when": "editorLangId == `crystal`"
-				}
-			]
 		}
 	},
 	"scripts": {
