@@ -10,6 +10,7 @@ import { CrystalDocumentSymbolProvider } from "./crystalSymbols"
 import { CrystalCompletionItemProvider } from "./crystalCompletion"
 import { CrystalImplementationsProvider } from "./crystalImplementations"
 import { registerCrystalTask } from "./crystalTasks"
+import { registerCrystalMacro } from "./crystalMacro"
 import { CrystalTestingProvider } from "./crystalSpec"
 
 // Language configuration for identation and patterns. Based on vscode-ruby
@@ -47,6 +48,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	// Register Tasks
 	registerCrystalTask(context)
+
+	registerCrystalMacro(context)
 
 	// Register tests/specs
 	new CrystalTestingProvider()
