@@ -3,13 +3,7 @@ import { tmpdir } from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'node:child_process';
-import { error } from "console";
 import * as junit2json from 'junit2json';
-
-enum ItemType {
-    File,
-    TestCase
-}
 
 export class CrystalTestingProvider {
     private config = vscode.workspace.getConfiguration("crystal-lang")
@@ -22,6 +16,10 @@ export class CrystalTestingProvider {
     private executingCrystal = false
 
     constructor() {
+        if (!this.config["specs"]) {
+            return;
+        }
+
         this.refreshSpecWorkspaceFolders()
         this.refreshTestCases()
 

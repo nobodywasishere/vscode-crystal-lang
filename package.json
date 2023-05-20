@@ -192,6 +192,11 @@
 					"default": "shards",
 					"description": "Absolute path for Shards compiler executable."
 				},
+				"crystal-lang.specs": {
+					"type": "boolean",
+					"default": true,
+					"description": "Find/show specs in the Testing UI."
+				},
 				"crystal-lang.server": {
 					"type": "string",
 					"default": "",
