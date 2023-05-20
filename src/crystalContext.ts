@@ -1,5 +1,5 @@
 import * as vscode from "vscode"
-import { spawn } from "child_process"
+import { spawn } from 'node:child_process';
 
 import { spawnTools } from "./crystalUtils"
 
@@ -11,7 +11,7 @@ export class CrystalContext {
 	/**
 	 * Execute crystal tool context for current file:position
 	 */
-	crystalContext(document, position, key) {
+	crystalContext(document: vscode.TextDocument, position: vscode.Position, key) {
 		return spawnTools(document, position, "context", key)
 	}
 }

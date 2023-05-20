@@ -1,5 +1,5 @@
 import * as vscode from "vscode"
-import { spawn } from "child_process"
+import { spawn } from 'node:child_process';
 
 import { searchProblemsFromRaw, childOnStd, childOnError } from "./crystalUtils"
 

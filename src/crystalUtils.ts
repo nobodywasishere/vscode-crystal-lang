@@ -1,5 +1,5 @@
 import * as vscode from "vscode"
-import { execSync, spawn, SpawnOptions } from "child_process"
+import { execSync, spawn, SpawnOptions } from "node:child_process"
 
 // -----------------------------
 // Private utilities (no export)
@@ -237,7 +237,7 @@ export function searchProblemsFromRaw(response: string, uri: vscode.Uri) {
 /**
  * Execute Crystal tools context and implementations
  */
-export function spawnTools(document, position, command, key) {
+export function spawnTools(document: vscode.TextDocument, position: vscode.Position, command: string, key: string) {
 	return new Promise(function (resolve, reject) {
 		let response = ""
 		const config = vscode.workspace.getConfiguration("crystal-lang")
