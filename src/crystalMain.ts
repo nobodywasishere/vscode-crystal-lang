@@ -11,6 +11,7 @@ import { CrystalCompletionItemProvider } from "./crystalCompletion"
 import { CrystalImplementationsProvider } from "./crystalImplementations"
 import { registerCrystalTask } from "./crystalTasks"
 import { CrystalTestingProvider } from "./crystalSpec"
+import { registerCrystalMacroHoverProvider } from "./crystalMacro"
 
 // Language configuration for identation and patterns. Based on vscode-ruby
 const crystalConfiguration = {
@@ -50,6 +51,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	// Register tests/specs
 	new CrystalTestingProvider()
+
+	registerCrystalMacroHoverProvider(context)
+
 
 	// Detect server and set configuration
 	let scry = config["server"]
